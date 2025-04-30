@@ -1,13 +1,18 @@
-//! Continuous Query Notification.
+//! Subscription.
 
-use std::os::raw::c_void;
+use std::{os::raw::c_void, sync::Arc};
 use std::ptr;
 
+use crate::Context;
+use crate::{chkerr, connection::Conn, Connection, DpiSubscr, OdpiStr, Result};
 use odpic_sys::{
-    dpiConn_subscribe, dpiSubscr, dpiSubscrCreateParams, dpiSubscrMessage, dpiSubscrNamespace, dpiSubscrProtocol, dpiSubscrQOS, DPI_FAILURE, DPI_OPCODE_ALL_OPS, DPI_SUBSCR_NAMESPACE_AQ, DPI_SUBSCR_NAMESPACE_DBCHANGE, DPI_SUBSCR_PROTO_CALLBACK, DPI_SUBSCR_PROTO_HTTP, DPI_SUBSCR_PROTO_MAIL, DPI_SUBSCR_PROTO_PLSQL, DPI_SUBSCR_QOS_BEST_EFFORT, DPI_SUBSCR_QOS_DEREG_NFY, DPI_SUBSCR_QOS_QUERY, DPI_SUBSCR_QOS_RELIABLE, DPI_SUBSCR_QOS_ROWIDS, DPI_SUCCESS
+    dpiConn_subscribe, dpiSubscr, dpiSubscrCreateParams, dpiSubscrMessage, dpiSubscrNamespace,
+    dpiSubscrProtocol, dpiSubscrQOS, dpiSubscr_addRef, dpiSubscr_prepareStmt, dpiSubscr_release,
+    DPI_OPCODE_ALL_OPS, DPI_SUBSCR_NAMESPACE_AQ, DPI_SUBSCR_NAMESPACE_DBCHANGE,
+    DPI_SUBSCR_PROTO_CALLBACK, DPI_SUBSCR_PROTO_HTTP, DPI_SUBSCR_PROTO_MAIL,
+    DPI_SUBSCR_PROTO_PLSQL, DPI_SUBSCR_QOS_BEST_EFFORT, DPI_SUBSCR_QOS_DEREG_NFY,
+    DPI_SUBSCR_QOS_QUERY, DPI_SUBSCR_QOS_RELIABLE, DPI_SUBSCR_QOS_ROWIDS, DPI_SUCCESS,
 };
-
-use crate::{chkerr, Connection, OdpiStr};
 
 pub enum SubscrNamespace {
     Aq,
@@ -60,11 +65,6 @@ impl SubscrQos {
         }
     }
 }
-
-pub type SubscrCallback = extern "C" fn(
-    context: *mut c_void,
-    message: *mut dpiSubscrMessage,
-);
 
 pub struct SubscrCreateParams {
     pub suscr_namespace: Option<SubscrNamespace>,
@@ -121,10 +121,13 @@ impl SubscrCreateParams {
     }
 }
 
-use crate::Result;
+pub struct NotificationMessage {
+    pub inner: dpiSubscrMessage,
+}
 
 pub struct Subscr {
-    pub inner: *mut dpiSubscr
+    pub conn: Conn,
+    pub handle: DpiSubscr,
 }
 
 pub struct HandlerWrapper(pub Box<dyn Fn(NotificationMessage)>);
@@ -133,19 +136,49 @@ impl Connection {
     pub fn subscribe(&self, subscr_create_params: SubscrCreateParams) -> Result<Subscr> {
         let mut params: dpiSubscrCreateParams = unsafe { std::mem::zeroed() };
         params = subscr_create_params.to_dpi();
-        let mut subscr = ptr::null_mut();
+        let mut subscr_raw = ptr::null_mut();
 
         chkerr!(
             self.ctxt(),
-            dpiConn_subscribe(self.handle(), &mut params, &mut subscr)
+            dpiConn_subscribe(self.handle(), &mut params, &mut subscr_raw)
         );
 
-        Ok(Subscr { inner: subscr })
+        let subscr = DpiSubscr::new(subscr_raw);
+
+        Ok(Subscr { handle: subscr, conn: Arc::clone(&self.conn) })
+    }
+}
+
+impl Subscr {
+    pub(crate) fn ctxt(&self) -> &Context {
+        self.conn.ctxt()
     }
 
-}
+    pub(crate) fn handle(&self) -> *mut dpiSubscr {
+        self.handle.raw
+    }
+    
+    pub fn add_ref(&self) -> Result<()> {
+        chkerr!(self.ctxt(), dpiSubscr_addRef(self.handle()));
 
-pub struct NotificationMessage {
-    pub inner: dpiSubscrMessage,
-}
+        Ok(())
+    }
 
+    pub fn prepare_stmt(&self, sql: String) -> Result<()> {
+        let sql = OdpiStr::new(sql);
+        let stmt = ptr::null_mut();
+
+        chkerr!(
+            self.ctxt(),
+            dpiSubscr_prepareStmt(self.handle(), sql.ptr, sql.len, stmt)
+        );
+
+        Ok(())
+    }
+
+    pub fn release(&self, conn: &Connection) -> Result<()> {
+        chkerr!(conn.ctxt(), dpiSubscr_release(self.handle()));
+
+        Ok(())
+    }
+}

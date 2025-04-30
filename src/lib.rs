@@ -31,7 +31,6 @@ mod batch;
 #[allow(non_snake_case)]
 #[allow(improper_ctypes)]
 pub mod conn;
-pub mod subscr;
 mod connection;
 mod context;
 mod error;
@@ -44,6 +43,7 @@ mod row;
 pub mod sql_type;
 mod sql_value;
 mod statement;
+pub mod subscr;
 mod util;
 mod version;
 
