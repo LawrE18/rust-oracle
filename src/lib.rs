@@ -31,6 +31,7 @@ mod batch;
 #[allow(non_snake_case)]
 #[allow(improper_ctypes)]
 pub mod conn;
+pub mod subscr;
 mod connection;
 mod context;
 mod error;
@@ -149,6 +150,8 @@ macro_rules! define_dpi_data_with_refcount {
 
 // define DpiConn wrapping *mut dpiConn.
 define_dpi_data_with_refcount!(Conn);
+
+define_dpi_data_with_refcount!(Subscr);
 
 // define DpiMsgProps wrapping *mut dpiMsgProps.
 define_dpi_data_with_refcount!(MsgProps);
