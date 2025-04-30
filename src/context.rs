@@ -378,4 +378,12 @@ impl Context {
             params.assume_init()
         }
     }
+
+    pub fn subscr_create_params(&self) -> dpiSubscrCreateParams {
+        let mut params = MaybeUninit::uninit();
+        unsafe {
+            dpiContext_initSubscrCreateParams(self.context, params.as_mut_ptr());
+            params.assume_init()
+        }
+    }
 }

@@ -1,7 +1,7 @@
 //! Subscription.
 
+use std::{mem, ptr};
 use std::{os::raw::c_void, sync::Arc};
-use std::ptr;
 
 use crate::Context;
 use crate::{chkerr, connection::Conn, Connection, DpiSubscr, OdpiStr, Result};
@@ -14,8 +14,10 @@ use odpic_sys::{
     DPI_SUBSCR_QOS_QUERY, DPI_SUBSCR_QOS_RELIABLE, DPI_SUBSCR_QOS_ROWIDS, DPI_SUCCESS,
 };
 
+#[derive(Debug, Default)]
 pub enum SubscrNamespace {
     Aq,
+    #[default]
     DbChange,
 }
 
@@ -28,7 +30,9 @@ impl SubscrNamespace {
     }
 }
 
+#[derive(Debug, Default)]
 pub enum SubscrProtocol {
+    #[default]
     Callback,
     Http,
     Mail,
@@ -67,7 +71,7 @@ impl SubscrQos {
 }
 
 pub struct SubscrCreateParams {
-    pub suscr_namespace: Option<SubscrNamespace>,
+    pub namespace: Option<SubscrNamespace>,
     pub protocol: Option<SubscrProtocol>,
     pub qos: Option<SubscrQos>,
     pub operations: Option<u32>,
@@ -77,41 +81,11 @@ pub struct SubscrCreateParams {
     pub callback: Option<HandlerWrapper>,
     pub recipient_name: Option<String>,
     pub ip_address: Option<String>,
+    pub client_initiated: Option<i32>,
 }
 
 impl SubscrCreateParams {
-    pub(crate) fn to_dpi(self) -> dpiSubscrCreateParams {
-        let name = OdpiStr::new(self.name.unwrap());
-        let recipient_name = OdpiStr::new(self.recipient_name.unwrap());
-        let ip_address = OdpiStr::new(self.ip_address.unwrap());
-        let wrapper = self
-            .callback
-            .map(|cb| Box::into_raw(Box::new(cb)) as *mut c_void);
-
-        dpiSubscrCreateParams {
-            subscrNamespace: self.suscr_namespace.unwrap().to_dpi(),
-            protocol: self.protocol.unwrap().to_dpi(),
-            qos: self.qos.unwrap().to_dpi(),
-            operations: DPI_OPCODE_ALL_OPS,
-            portNumber: 0,
-            timeout: self.timeout.unwrap(),
-            name: name.ptr,
-            nameLength: name.len,
-            callback: Some(Self::notification_callback),
-            callbackContext: wrapper.unwrap(),
-            recipientName: recipient_name.ptr,
-            recipientNameLength: recipient_name.len,
-            ipAddress: ip_address.ptr,
-            ipAddressLength: ip_address.len,
-            groupingClass: 0,
-            groupingValue: 0,
-            groupingType: 0,
-            outRegId: 0,
-            clientInitiated: 0,
-        }
-    }
-
-    extern "C" fn notification_callback(context: *mut c_void, message: *mut dpiSubscrMessage) {
+    pub extern "C" fn notification_callback(context: *mut c_void, message: *mut dpiSubscrMessage) {
         unsafe {
             let wrapper_ptr = context as *mut HandlerWrapper;
             let handler = &(*wrapper_ptr).0;
@@ -126,30 +100,76 @@ pub struct NotificationMessage {
 }
 
 pub struct Subscr {
-    pub conn: Conn,
-    pub handle: DpiSubscr,
+    pub(crate) conn: Conn,
+    pub(crate) handle: DpiSubscr,
 }
 
 pub struct HandlerWrapper(pub Box<dyn Fn(NotificationMessage)>);
 
 impl Connection {
     pub fn subscribe(&self, subscr_create_params: SubscrCreateParams) -> Result<Subscr> {
-        let mut params: dpiSubscrCreateParams = unsafe { std::mem::zeroed() };
-        params = subscr_create_params.to_dpi();
-        let mut subscr_raw = ptr::null_mut();
+        let ctxt = self.ctxt();
+        let mut params = ctxt.subscr_create_params();
+        if let Some(namespace) = subscr_create_params.namespace {
+            params.subscrNamespace = namespace.to_dpi();
+        }
+        if let Some(protocol) = subscr_create_params.protocol {
+            params.protocol = protocol.to_dpi();
+        }
+        if let Some(qos) = subscr_create_params.qos {
+            params.qos = qos.to_dpi();
+        }
+        if let Some(operations) = subscr_create_params.operations {
+            params.operations = operations;
+        }
+        if let Some(port_number) = subscr_create_params.port_number {
+            params.portNumber = port_number;
+        }
+        if let Some(timeout) = subscr_create_params.timeout {
+            params.timeout = timeout;
+        }
+        if let Some(name) = subscr_create_params.name {
+            let name = OdpiStr::new(name);
+            params.name = name.ptr;
+            params.nameLength = name.len;
+        }
+        if let Some(callback) = subscr_create_params.callback {
+            params.callback = Some(SubscrCreateParams::notification_callback);
+            params.callbackContext = Box::into_raw(Box::new(callback)) as *mut c_void;
+        }
+        if let Some(recipient_name) = subscr_create_params.recipient_name {
+            let recipient_name = OdpiStr::new(recipient_name);
+            params.recipientName = recipient_name.ptr;
+            params.recipientNameLength = recipient_name.len;
+        }
+        if let Some(ip_address) = subscr_create_params.ip_address {
+            let ip_address = OdpiStr::new(ip_address);
+            params.ipAddress = ip_address.ptr;
+            params.ipAddressLength = ip_address.len;
+        }
+        if let Some(client_initiated) = subscr_create_params.client_initiated {
+            params.clientInitiated = client_initiated;
+        }
+
+        let mut handle = ptr::null_mut();
 
         chkerr!(
-            self.ctxt(),
-            dpiConn_subscribe(self.handle(), &mut params, &mut subscr_raw)
+            ctxt,
+            dpiConn_subscribe(self.handle(), &mut params, &mut handle)
         );
 
-        let subscr = DpiSubscr::new(subscr_raw);
-
-        Ok(Subscr { handle: subscr, conn: Arc::clone(&self.conn) })
+        Ok(Subscr::from_dpi_handle(self, handle))
     }
 }
 
 impl Subscr {
+    pub(crate) fn from_dpi_handle(conn: &Connection, handle: *mut dpiSubscr) -> Subscr {
+        Subscr {
+            conn: Arc::clone(&conn.conn),
+            handle: DpiSubscr::new(handle),
+        }
+    }
+
     pub(crate) fn ctxt(&self) -> &Context {
         self.conn.ctxt()
     }
@@ -157,7 +177,7 @@ impl Subscr {
     pub(crate) fn handle(&self) -> *mut dpiSubscr {
         self.handle.raw
     }
-    
+
     pub fn add_ref(&self) -> Result<()> {
         chkerr!(self.ctxt(), dpiSubscr_addRef(self.handle()));
 
