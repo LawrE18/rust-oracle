@@ -1,17 +1,17 @@
 //! Subscription.
 
-use std::{mem, ptr};
+use std::ptr;
 use std::{os::raw::c_void, sync::Arc};
 
-use crate::Context;
-use crate::{chkerr, connection::Conn, Connection, DpiSubscr, OdpiStr, Result};
+use crate::{chkerr, connection::Conn, Connection, DpiSubscr, Result};
+use crate::{Context, DpiStmt, OdpiStr};
 use odpic_sys::{
-    dpiConn_subscribe, dpiSubscr, dpiSubscrCreateParams, dpiSubscrMessage, dpiSubscrNamespace,
-    dpiSubscrProtocol, dpiSubscrQOS, dpiSubscr_addRef, dpiSubscr_prepareStmt, dpiSubscr_release,
-    DPI_OPCODE_ALL_OPS, DPI_SUBSCR_NAMESPACE_AQ, DPI_SUBSCR_NAMESPACE_DBCHANGE,
-    DPI_SUBSCR_PROTO_CALLBACK, DPI_SUBSCR_PROTO_HTTP, DPI_SUBSCR_PROTO_MAIL,
-    DPI_SUBSCR_PROTO_PLSQL, DPI_SUBSCR_QOS_BEST_EFFORT, DPI_SUBSCR_QOS_DEREG_NFY,
-    DPI_SUBSCR_QOS_QUERY, DPI_SUBSCR_QOS_RELIABLE, DPI_SUBSCR_QOS_ROWIDS, DPI_SUCCESS,
+    dpiConn_subscribe, dpiSubscr, dpiSubscrMessage, dpiSubscrNamespace, dpiSubscrProtocol,
+    dpiSubscrQOS, dpiSubscr_addRef, dpiSubscr_prepareStmt, dpiSubscr_release,
+    DPI_SUBSCR_NAMESPACE_AQ, DPI_SUBSCR_NAMESPACE_DBCHANGE, DPI_SUBSCR_PROTO_CALLBACK,
+    DPI_SUBSCR_PROTO_HTTP, DPI_SUBSCR_PROTO_MAIL, DPI_SUBSCR_PROTO_PLSQL,
+    DPI_SUBSCR_QOS_BEST_EFFORT, DPI_SUBSCR_QOS_DEREG_NFY, DPI_SUBSCR_QOS_QUERY,
+    DPI_SUBSCR_QOS_RELIABLE, DPI_SUBSCR_QOS_ROWIDS, DPI_SUCCESS,
 };
 
 #[derive(Debug, Default)]
@@ -87,6 +87,7 @@ pub struct SubscrCreateParams {
 impl SubscrCreateParams {
     pub extern "C" fn notification_callback(context: *mut c_void, message: *mut dpiSubscrMessage) {
         unsafe {
+            println!("in unsafe notif callback");
             let wrapper_ptr = context as *mut HandlerWrapper;
             let handler = &(*wrapper_ptr).0;
             let msg = NotificationMessage { inner: *message };
@@ -129,7 +130,7 @@ impl Connection {
             params.timeout = timeout;
         }
         if let Some(name) = subscr_create_params.name {
-            let name = OdpiStr::new(name);
+            let name = OdpiStr::new(name.as_str());
             params.name = name.ptr;
             params.nameLength = name.len;
         }
@@ -138,12 +139,12 @@ impl Connection {
             params.callbackContext = Box::into_raw(Box::new(callback)) as *mut c_void;
         }
         if let Some(recipient_name) = subscr_create_params.recipient_name {
-            let recipient_name = OdpiStr::new(recipient_name);
+            let recipient_name = OdpiStr::new(recipient_name.as_str());
             params.recipientName = recipient_name.ptr;
             params.recipientNameLength = recipient_name.len;
         }
         if let Some(ip_address) = subscr_create_params.ip_address {
-            let ip_address = OdpiStr::new(ip_address);
+            let ip_address = OdpiStr::new(ip_address.as_str());
             params.ipAddress = ip_address.ptr;
             params.ipAddressLength = ip_address.len;
         }
@@ -185,12 +186,12 @@ impl Subscr {
     }
 
     pub fn prepare_stmt(&self, sql: String) -> Result<()> {
-        let sql = OdpiStr::new(sql);
-        let stmt = ptr::null_mut();
-
+        let mut handle = DpiStmt::null();
+        let sql =OdpiStr::new(sql.as_str());
+        println!("{:?}", String::from_utf8(sql.to_string().as_bytes().to_vec()));
         chkerr!(
             self.ctxt(),
-            dpiSubscr_prepareStmt(self.handle(), sql.ptr, sql.len, stmt)
+            dpiSubscr_prepareStmt(self.handle(), sql.ptr, sql.len, &mut handle.raw)
         );
 
         Ok(())
