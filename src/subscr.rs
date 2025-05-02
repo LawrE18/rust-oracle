@@ -6,12 +6,7 @@ use std::{os::raw::c_void, sync::Arc};
 use crate::{chkerr, connection::Conn, Connection, DpiSubscr, Result};
 use crate::{Context, DpiStmt, OdpiStr};
 use odpic_sys::{
-    dpiConn_subscribe, dpiSubscr, dpiSubscrMessage, dpiSubscrNamespace, dpiSubscrProtocol,
-    dpiSubscrQOS, dpiSubscr_addRef, dpiSubscr_prepareStmt, dpiSubscr_release,
-    DPI_SUBSCR_NAMESPACE_AQ, DPI_SUBSCR_NAMESPACE_DBCHANGE, DPI_SUBSCR_PROTO_CALLBACK,
-    DPI_SUBSCR_PROTO_HTTP, DPI_SUBSCR_PROTO_MAIL, DPI_SUBSCR_PROTO_PLSQL,
-    DPI_SUBSCR_QOS_BEST_EFFORT, DPI_SUBSCR_QOS_DEREG_NFY, DPI_SUBSCR_QOS_QUERY,
-    DPI_SUBSCR_QOS_RELIABLE, DPI_SUBSCR_QOS_ROWIDS, DPI_SUCCESS,
+    dpiConn_subscribe, dpiStmt_execute, dpiSubscr, dpiSubscrMessage, dpiSubscrNamespace, dpiSubscrProtocol, dpiSubscrQOS, dpiSubscr_addRef, dpiSubscr_prepareStmt, dpiSubscr_release, DPI_MODE_EXEC_DEFAULT, DPI_SUBSCR_NAMESPACE_AQ, DPI_SUBSCR_NAMESPACE_DBCHANGE, DPI_SUBSCR_PROTO_CALLBACK, DPI_SUBSCR_PROTO_HTTP, DPI_SUBSCR_PROTO_MAIL, DPI_SUBSCR_PROTO_PLSQL, DPI_SUBSCR_QOS_BEST_EFFORT, DPI_SUBSCR_QOS_DEREG_NFY, DPI_SUBSCR_QOS_QUERY, DPI_SUBSCR_QOS_RELIABLE, DPI_SUBSCR_QOS_ROWIDS, DPI_SUCCESS
 };
 
 #[derive(Debug, Default)]
@@ -185,14 +180,19 @@ impl Subscr {
         Ok(())
     }
 
-    pub fn prepare_stmt(&self, sql: String) -> Result<()> {
+    pub fn register_query(&self, sql: String) -> Result<()> {
         let mut handle = DpiStmt::null();
         let sql =OdpiStr::new(sql.as_str());
-        println!("{:?}", String::from_utf8(sql.to_string().as_bytes().to_vec()));
         chkerr!(
             self.ctxt(),
             dpiSubscr_prepareStmt(self.handle(), sql.ptr, sql.len, &mut handle.raw)
         );
+
+        chkerr!(
+            self.ctxt(),
+            dpiStmt_execute(handle.raw, DPI_MODE_EXEC_DEFAULT, ptr::null_mut())
+        );
+        
 
         Ok(())
     }
