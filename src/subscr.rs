@@ -6,7 +6,12 @@ use std::{os::raw::c_void, sync::Arc};
 use crate::{chkerr, connection::Conn, Connection, DpiSubscr, Result};
 use crate::{Context, DpiStmt, OdpiStr};
 use odpic_sys::{
-    dpiConn_subscribe, dpiStmt_execute, dpiSubscr, dpiSubscrMessage, dpiSubscrNamespace, dpiSubscrProtocol, dpiSubscrQOS, dpiSubscr_addRef, dpiSubscr_prepareStmt, dpiSubscr_release, DPI_MODE_EXEC_DEFAULT, DPI_SUBSCR_NAMESPACE_AQ, DPI_SUBSCR_NAMESPACE_DBCHANGE, DPI_SUBSCR_PROTO_CALLBACK, DPI_SUBSCR_PROTO_HTTP, DPI_SUBSCR_PROTO_MAIL, DPI_SUBSCR_PROTO_PLSQL, DPI_SUBSCR_QOS_BEST_EFFORT, DPI_SUBSCR_QOS_DEREG_NFY, DPI_SUBSCR_QOS_QUERY, DPI_SUBSCR_QOS_RELIABLE, DPI_SUBSCR_QOS_ROWIDS, DPI_SUCCESS
+    dpiConn_subscribe, dpiStmt_execute, dpiSubscr, dpiSubscrMessage, dpiSubscrNamespace,
+    dpiSubscrProtocol, dpiSubscrQOS, dpiSubscr_addRef, dpiSubscr_prepareStmt, dpiSubscr_release,
+    DPI_MODE_EXEC_DEFAULT, DPI_SUBSCR_NAMESPACE_AQ, DPI_SUBSCR_NAMESPACE_DBCHANGE,
+    DPI_SUBSCR_PROTO_CALLBACK, DPI_SUBSCR_PROTO_HTTP, DPI_SUBSCR_PROTO_MAIL,
+    DPI_SUBSCR_PROTO_PLSQL, DPI_SUBSCR_QOS_BEST_EFFORT, DPI_SUBSCR_QOS_DEREG_NFY,
+    DPI_SUBSCR_QOS_QUERY, DPI_SUBSCR_QOS_RELIABLE, DPI_SUBSCR_QOS_ROWIDS, DPI_SUCCESS,
 };
 
 #[derive(Debug, Default)]
@@ -65,7 +70,7 @@ impl SubscrQos {
     }
 }
 
-pub struct SubscrCreateParams {
+pub struct SubscrCreateParams<H: NotificationHandler> {
     pub namespace: Option<SubscrNamespace>,
     pub protocol: Option<SubscrProtocol>,
     pub qos: Option<SubscrQos>,
@@ -73,26 +78,33 @@ pub struct SubscrCreateParams {
     pub port_number: Option<u32>,
     pub timeout: Option<u32>,
     pub name: Option<String>,
-    pub callback: Option<HandlerWrapper>,
+    pub callback: Option<H>,
     pub recipient_name: Option<String>,
     pub ip_address: Option<String>,
     pub client_initiated: Option<i32>,
 }
 
-impl SubscrCreateParams {
-    pub extern "C" fn notification_callback(context: *mut c_void, message: *mut dpiSubscrMessage) {
-        unsafe {
-            println!("in unsafe notif callback");
-            let wrapper_ptr = context as *mut HandlerWrapper;
-            let handler = &(*wrapper_ptr).0;
-            let msg = NotificationMessage { inner: *message };
-            handler(msg);
-        }
-    }
+/// Wrapper for notification handler.
+struct NotificationHandlerWrapper(Box<dyn NotificationHandler>);
+
+/// Notification handler.
+pub trait NotificationHandler: Send + Sync {
+    fn handle_notification(&self, msg: NotificationMessage);
 }
 
 pub struct NotificationMessage {
     pub inner: dpiSubscrMessage,
+}
+
+impl<H: NotificationHandler> SubscrCreateParams<H> {
+    pub extern "C" fn notification_callback(context: *mut c_void, message: *mut dpiSubscrMessage) {
+        unsafe {
+            let wrapper_ptr = context as *mut NotificationHandlerWrapper;
+            let handler = &(*wrapper_ptr).0;
+            let msg = NotificationMessage { inner: *message };
+            handler.handle_notification(msg);
+        }
+    }
 }
 
 pub struct Subscr {
@@ -100,10 +112,11 @@ pub struct Subscr {
     pub(crate) handle: DpiSubscr,
 }
 
-pub struct HandlerWrapper(pub Box<dyn Fn(NotificationMessage)>);
-
 impl Connection {
-    pub fn subscribe(&self, subscr_create_params: SubscrCreateParams) -> Result<Subscr> {
+    pub fn subscribe<H: NotificationHandler + 'static>(
+        &self,
+        subscr_create_params: SubscrCreateParams<H>,
+    ) -> Result<Subscr> {
         let ctxt = self.ctxt();
         let mut params = ctxt.subscr_create_params();
         if let Some(namespace) = subscr_create_params.namespace {
@@ -130,8 +143,11 @@ impl Connection {
             params.nameLength = name.len;
         }
         if let Some(callback) = subscr_create_params.callback {
-            params.callback = Some(SubscrCreateParams::notification_callback);
-            params.callbackContext = Box::into_raw(Box::new(callback)) as *mut c_void;
+            let wrapper = NotificationHandlerWrapper(Box::new(callback));
+            let wrapper_ptr = Box::into_raw(Box::new(wrapper));
+
+            params.callback = Some(SubscrCreateParams::<H>::notification_callback);
+            params.callbackContext = wrapper_ptr as *mut c_void;
         }
         if let Some(recipient_name) = subscr_create_params.recipient_name {
             let recipient_name = OdpiStr::new(recipient_name.as_str());
@@ -182,7 +198,7 @@ impl Subscr {
 
     pub fn register_query(&self, sql: String) -> Result<()> {
         let mut handle = DpiStmt::null();
-        let sql =OdpiStr::new(sql.as_str());
+        let sql = OdpiStr::new(sql.as_str());
         chkerr!(
             self.ctxt(),
             dpiSubscr_prepareStmt(self.handle(), sql.ptr, sql.len, &mut handle.raw)
@@ -192,7 +208,6 @@ impl Subscr {
             self.ctxt(),
             dpiStmt_execute(handle.raw, DPI_MODE_EXEC_DEFAULT, ptr::null_mut())
         );
-        
 
         Ok(())
     }
